@@ -1,0 +1,4 @@
+{"type":"permission-mode","permissionMode":"auto","sessionId":"eb18088a-ea95-4eef-910c-672c8a35ffc3"}
+{"parentUuid":null,"type":"user","message":{"role":"user","content":"Check the live GitHub state against the M15 report."},"timestamp":"2026-09-26T09:35:16.500Z","cwd":"/home/drakestapleton","sessionId":"eb18088a-ea95-4eef-910c-672c8a35ffc3"}
+{"type":"assistant","message":{"model":"claude-opus-5-5","role":"assistant","content":[{"type":"thinking","thinking":"hmm"},{"type":"text","text":"Looking now."},{"type":"tool_use","id":"toolu_x","name":"Bash","input":{"command":"ls"}}]},"timestamp":"2026-09-26T09:35:20.100Z","cwd":"/home/drakestapleton"}
+{"type":"user","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_x","content":"a\nb"}]},"timestamp":"2026-09-26T09:35:21.000Z"}
