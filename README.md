@@ -13,7 +13,7 @@ Archive root: `~/archive/agent-chats/` (override with `AGENT_ARCHIVE_ROOT`).
 |---|---|
 | `records/<agent>/<YYYY-MM-DD>.jsonl` | common records, append-only, date = message timestamp (UTC) |
 | `raw/<agent>/<host>/<original relative path>` | verbatim copies of the source files (JSONL appended byte for byte as they grow; sqlite files copied when they change) |
-| `latest/<agent>.txt`, `latest/<agent>.jsonl` | rolling window, last 20000 records, rewritten atomically (temp file + rename). `.txt` lines look like `[ts session8 role] text` with newlines shown as `\n` |
+| `latest/<agent>.txt`, `latest/<agent>.jsonl` | rolling window, last 20000 records, rewritten atomically (temp file + rename). `.txt` lines look like `[ts session8 role] text` with newlines shown as `\n`; text is cut at 8000 characters (`...[truncated]`) |
 | `state/<agent>.json` | per-source cursors (byte offsets, row cursors, file signatures) |
 
 State loss only causes re-reads: records are de-duplicated on `(agent, host, session, role, src.path, src.pos)`
@@ -23,7 +23,7 @@ and the raw mirror never writes bytes it already has.
 
 ```json
 {"ts":"2026-10-04T20:00:00.000Z","agent":"claude|codex|opencode|gemini|muse","host":"spark|macbook",
- "session":"<id>","role":"user|assistant|system|tool","text":"...","model":null,"cwd":null,
+ "session":"<id>","role":"user|assistant|system","text":"...","model":null,"cwd":null,
  "src":{"path":"...","pos":123}}
 ```
 
@@ -36,7 +36,7 @@ part id (OpenCode). Only conversational text is turned into records; tool calls 
 agent-archive collect                    # loop every 10 s (run detached)
 agent-archive once [--no-mac]            # one pass, prints per-agent counts and duration
 agent-archive status                     # per agent: last record, today/total, sources, preview
-agent-archive query --agent claude --since 2026-10-04T00:00:00Z --grep 'regex' --limit 50 [--json]
+agent-archive query [--agent claude] --since 2026-10-04T00:00:00Z --grep 'regex' --limit 50 [--json]
 agent-archive debug-pb FILE              # dump a raw protobuf blob (for Gemini format work)
 ```
 
@@ -44,11 +44,11 @@ agent-archive debug-pb FILE              # dump a raw protobuf blob (for Gemini 
 
 | Agent | Source | Status |
 |---|---|---|
-| claude | `~/.claude/projects/**/*.jsonl`, lines `type` user/assistant, text blocks only | verified on live data |
-| codex | `~/.codex/sessions/**/*.jsonl`, `response_item` messages (`developer` becomes `system`) | verified on live data |
-| opencode | `~/.local/share/opencode/opencode.db` (opened read-only), `text` parts; raw mirror is `raw/opencode/spark/opencode-rows.jsonl` (the rows, verbatim JSON) because the database is live | verified on live data |
-| gemini | per-conversation sqlite `.db` in `~/.gemini/antigravity-{cli,ide}/conversations` (Spark) and, via `ssh macbook` + `scp`, `~/.gemini/antigravity{,-cli,-ide}/conversations` on the Mac into `raw/gemini/macbook/` | UNVERIFIED format: step blobs are protobuf with no schema available; field numbers (user text 19.3.1, reply 20.1, time 5.1) were inferred from sampling. Reply "thinking" text (20.3) is not turned into records. Mac WAL files are pulled but a `-shm` is not, so uncommitted Mac data may be missed |
-| muse | `~/.local/share/muse/sessions/**/session.jsonl`; user text from `runtime.user_intent.accepted`, replies from `assistant_message_committed` | partly verified: the original design note named `turn.input.user` / `run.output.delta`, but those do not occur in the 81 sessions on disk, so the events above are used instead. Framed `retained_frame` lines are only kept in raw |
+| claude | `~/.claude/projects/**/*.jsonl`, lines `type` user/assistant, text blocks only | unit-tested on `tests/fixtures/claude.jsonl` |
+| codex | `~/.codex/sessions/**/*.jsonl`, `response_item` messages (`developer` becomes `system`) | unit-tested on `tests/fixtures/codex.jsonl` |
+| opencode | `~/.local/share/opencode/opencode.db` (opened read-only), `text` parts; raw mirror is `raw/opencode/spark/opencode-rows.jsonl` (one JSON line per text part, with its message JSON) because the database is live | unit-tested against a small database the test builds with the tables and columns the query reads; no sample of the live database is stored in this repo |
+| gemini | per-conversation sqlite `.db` in `~/.gemini/antigravity{,-cli,-ide}/conversations` (Spark) and, via `ssh macbook` + `scp`, `~/.gemini/antigravity{,-cli,-ide}/conversations` on the Mac into `raw/gemini/macbook/` | UNVERIFIED format: step blobs are protobuf with no schema available; field numbers (user text 19.3.1, reply 20.1, time 5.1) were inferred from sampling. Reply "thinking" text (20.3) is not turned into records. Mac WAL files are pulled but a `-shm` is not, so uncommitted Mac data may be missed |
+| muse | `~/.local/share/muse/sessions/**/session.jsonl`; user text from `runtime.user_intent.accepted`, replies from `assistant_message_committed` | partly verified (unit-tested on `tests/fixtures/muse.jsonl`): the original design note named `turn.input.user` / `run.output.delta`, but those did not occur in the 81 sessions on disk when this parser was written, so the events above are used instead. Framed `retained_frame` lines are only kept in raw |
 
 The Mac pull is skipped (with a log line) if `ssh macbook` fails, and runs at most every 5 minutes.
 `~/.gemini/antigravity-cli/history.jsonl` is command history only and is mirrored raw.
@@ -59,7 +59,7 @@ The Mac pull is skipped (with a log line) if `ssh macbook` fails, and runs at mo
 2. For JSONL sources call `drive_jsonl(...)` from a `collect_<agent>` function; for databases keep a cursor with
    `store.cursor/set_cursor` and call `store.emit(record, check_dup)`.
 3. Register it in `pass()` in `src/main.rs`, add the name to `AGENTS` in `src/core.rs`.
-4. Cut a small fixture from a real sample (no secrets) into `tests/fixtures/` and add a unit test.
+4. Cut a small fixture from a real sample (no secrets) into `tests/fixtures/` and add a unit test in the `tests` module of `src/main.rs`.
 
 ## Cortex rule
 
