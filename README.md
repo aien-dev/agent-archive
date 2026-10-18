@@ -5,6 +5,12 @@ Gemini/Antigravity (Spark and MacBook) and Muse. Plain JSONL files, one common r
 plus a verbatim mirror of the original source files. Single Rust binary, no Python, no network except a
 read-only `ssh`/`scp` pull from the MacBook.
 
+Supports [Aienix](https://github.com/aien-dev/aienix), the core tree of AIEN. It is a tool for the people and agents
+building AIEN: it keeps their chats so past work can be searched later.
+
+**Status (2026-10-18): in use.** The collector runs on the Spark. The code has not changed since
+2026-10-04 (first commit); the last change was a README correction on 2026-10-13.
+
 ## Layout
 
 Archive root: `~/archive/agent-chats/` (override with `AGENT_ARCHIVE_ROOT`).
@@ -47,10 +53,10 @@ agent-archive debug-pb FILE              # dump a raw protobuf blob (for Gemini 
 | claude | `~/.claude/projects/**/*.jsonl`, lines `type` user/assistant, text blocks only | unit-tested on `tests/fixtures/claude.jsonl` |
 | codex | `~/.codex/sessions/**/*.jsonl`, `response_item` messages (`developer` becomes `system`) | unit-tested on `tests/fixtures/codex.jsonl` |
 | opencode | `~/.local/share/opencode/opencode.db` (opened read-only), `text` parts; raw mirror is `raw/opencode/spark/opencode-rows.jsonl` (one JSON line per text part, with its message JSON) because the database is live | unit-tested against a small database the test builds with the tables and columns the query reads; no sample of the live database is stored in this repo |
-| gemini | per-conversation sqlite `.db` in `~/.gemini/antigravity{,-cli,-ide}/conversations` (Spark) and, via `ssh macbook` + `scp`, `~/.gemini/antigravity{,-cli,-ide}/conversations` on the Mac into `raw/gemini/macbook/` | UNVERIFIED format: step blobs are protobuf with no schema available; field numbers (user text 19.3.1, reply 20.1, time 5.1) were inferred from sampling. Reply "thinking" text (20.3) is not turned into records. Mac WAL files are pulled but a `-shm` is not, so uncommitted Mac data may be missed |
+| gemini | per-conversation sqlite `.db` in `~/.gemini/antigravity{,-cli,-ide}/conversations` (Spark) and, via `ssh` + `scp` to the host alias `macbook` (an entry in the local ssh config), `~/.gemini/antigravity{,-cli,-ide}/conversations` on the Mac into `raw/gemini/macbook/` | UNVERIFIED format: step blobs are protobuf with no schema available; field numbers (user text 19.3.1, reply 20.1, time 5.1) were inferred from sampling. Reply "thinking" text (20.3) is not turned into records. Mac WAL files are pulled but a `-shm` is not, so uncommitted Mac data may be missed |
 | muse | `~/.local/share/muse/sessions/**/session.jsonl`; user text from `runtime.user_intent.accepted`, replies from `assistant_message_committed` | partly verified (unit-tested on `tests/fixtures/muse.jsonl`): the original design note named `turn.input.user` / `run.output.delta`, but those did not occur in the 81 sessions on disk when this parser was written, so the events above are used instead. Framed `retained_frame` lines are only kept in raw |
 
-The Mac pull is skipped (with a log line) if `ssh macbook` fails, and runs at most every 5 minutes.
+The Mac pull is skipped (with a log line) if the ssh connection fails, and runs at most every 5 minutes.
 `~/.gemini/antigravity-cli/history.jsonl` is command history only and is mirrored raw.
 
 ## Adding a collector
