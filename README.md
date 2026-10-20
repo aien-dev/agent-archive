@@ -5,7 +5,7 @@ Gemini/Antigravity (Spark and MacBook) and Muse. Plain JSONL files, one common r
 plus a verbatim mirror of the original source files. Single Rust binary, no Python, no network except a
 read-only `ssh`/`scp` pull from the MacBook.
 
-Supports [Aienix](https://github.com/aien-dev/aienix), the core tree of AIEN. It is a tool for the people and agents
+Supports [AienOS](https://github.com/aien-dev/aienix), the core tree of AIEN. It is a tool for the people and agents
 building AIEN: it keeps their chats so past work can be searched later.
 
 **Status (2026-10-18): in use.** The collector runs on the Spark. The code has not changed since
