@@ -1,0 +1,7 @@
+build/
+__pycache__/
+*.db
+*.jsonl
+traces/
+phil/
+scrub_lists.json
