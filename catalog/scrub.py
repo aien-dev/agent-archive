@@ -33,6 +33,8 @@ ADDRESS = re.compile(r"\b\d{1,6}\s+(?:[A-Z][a-z]+\s){1,3}(?:Street|St|Avenue|Ave
 MONEY = re.compile(r"(?i)\$\s?\d[\d,]*(?:\.\d+)?(?:\s?(?:k|m|b|million|billion|thousand|grand)\b)?|\b\d[\d,]*(?:\.\d+)?\s?(?:dollars|bucks|grand|usd)\b|"
                    r"\b(?:account|acct|routing|card|iban|ssn|social security)(?:\s+(?:number|no\.?|#))?\D{0,12}\d[\d\- ]{5,}\d|\b(?:\d{4}[ -]){3}\d{4}\b")
 
+ONETIME = re.compile(r"\b(?=[A-Z0-9]{4}-[A-Z0-9]{4}\b)(?=[A-Z0-9-]*[A-Z])(?=[A-Z0-9-]*\d)[A-Z0-9]{4}-[A-Z0-9]{4}\b")   # device / login codes like WDJB-MJHT
+
 class Scrubber:
     def __init__(self):
         self.stats = Counter()
@@ -65,6 +67,8 @@ class Scrubber:
         text = self.place_rx.sub(pl, text)
         def ad(m): self.stats["address"] += 1; return "[ADDRESS]"
         text = ADDRESS.sub(ad, text)
+        def oc(m): self.stats["one-time-code"] += 1; return "[CODE]"
+        text = ONETIME.sub(oc, text)
         def mo(m): self.stats["money"] += 1; return "[MONEY]"
         text = MONEY.sub(mo, text)
         return text, sum(self.stats.values()) - n0

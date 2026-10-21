@@ -28,6 +28,9 @@ WHERE = {
     "DeepSeek Harness (Chrome app)": "UNKNOWN. A Chrome PWA (Aug 22 - Sep 14), probably the Atlas harness web UI from the Mac (Codex worktrees named atlas-harness). Nothing on the Spark. Experiment: on the Mac, find the PWA origin in ~/Library/Application Support/Google/Chrome/*/Web Applications and read its IndexedDB, or the harness server's own session store.",
     "Torn (Chrome app)": "Game. Non-agent voice samples only.",
     "com.anysphere.sand (Cursor family)": "UNKNOWN. Cursor-family app on the Mac: chats live in ~/Library/Application Support/<app>/User/workspaceStorage/*/state.vscdb (UNVERIFIED path). Not on the Spark.",
+    "Chrome app bippp... (agent chat, Sep 15-16)": "UNKNOWN. A Chrome PWA used as an agent chat for two days. Nothing on the Spark. Experiment: on the Mac, look up app id bipppfendfaipmoenbkohnnfcnlfdbhp under ~/Library/Application Support/Google/Chrome/*/Web Applications to get its site, then that site's export.",
+    "com.duckduckgo.macos.browser": "UNKNOWN. Browser: the site is not recorded by Wispr for this app (duck.ai chat is likely, UNVERIFIED). Experiment: DuckDuckGo browser history on the Mac for those timestamps.",
+    "com.electron.wispr-flow": "Wispr Flow's own window (tests and notes); not an agent chat.",
     "com.todesktop.230313 (Cursor)": "Cursor on the Mac (Aug 16-22): ~/Library/Application Support/Cursor/User/workspaceStorage/*/state.vscdb (UNVERIFIED). Not on the Spark.",
 }
 
@@ -90,6 +93,7 @@ else:
 
 w("## Labels\n")
 nm = sum(1 for t in M if t.get("model_labels"))
+w(f"(The model returned no line for {len(M) - nm} of the {len(M):,} matched items; those keep their rule labels.)\n")
 w(f"Two passes. Rules (`labels.py`, keyword rules, every dictation) and a model pass (Sonnet via `claude -p`, scrubbed text only, cached in `model_labels.jsonl`) on the {nm:,} matched traces, which sees what the agent said and did just before. "
   "For matched traces the model labels are final (`labels`), the rule labels stay in `labels_rules`.\n")
 lab = C(l for t in T for l in (t.get("labels_rules") or t["labels"])); labm = C(l for t in M for l in t["labels"]); labr = C(l for t in M for l in (t.get("labels_rules") or t["labels"]))
