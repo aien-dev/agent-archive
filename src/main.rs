@@ -65,8 +65,8 @@ fn status(root: &std::path::Path) {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let st = Store::open(root).expect("open archive");
     println!(
-        "{:<9} {:<26} {:>12} {:>8} {}",
-        "agent", "last record", "today", "sources", "preview"
+        "{:<9} {:<26} {:>12} {:>8} preview",
+        "agent", "last record", "today", "sources"
     );
     for a in AGENTS {
         let tail = load_tail(root, a, 1);
