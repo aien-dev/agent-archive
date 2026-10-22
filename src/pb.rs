@@ -38,21 +38,30 @@ pub fn fields(b: &[u8]) -> Option<Vec<(u32, Val<'_>)>> {
             0 => out.push((f, Val::Varint(varint(b, &mut i)?))),
             1 => {
                 let e = i.checked_add(8)?;
-                if e > b.len() { return None; }
+                if e > b.len() {
+                    return None;
+                }
                 out.push((f, Val::Fixed(u64::from_le_bytes(b[i..e].try_into().ok()?))));
                 i = e;
             }
             2 => {
                 let n = varint(b, &mut i)? as usize;
                 let e = i.checked_add(n)?;
-                if e > b.len() { return None; }
+                if e > b.len() {
+                    return None;
+                }
                 out.push((f, Val::Bytes(&b[i..e])));
                 i = e;
             }
             5 => {
                 let e = i.checked_add(4)?;
-                if e > b.len() { return None; }
-                out.push((f, Val::Fixed(u32::from_le_bytes(b[i..e].try_into().ok()?) as u64)));
+                if e > b.len() {
+                    return None;
+                }
+                out.push((
+                    f,
+                    Val::Fixed(u32::from_le_bytes(b[i..e].try_into().ok()?) as u64),
+                ));
                 i = e;
             }
             _ => return None,
@@ -69,7 +78,13 @@ pub fn dump(b: &[u8], depth: usize, path: &str, out: &mut String) {
                 Val::Varint(n) => out.push_str(&format!("{p} = {n}\n")),
                 Val::Fixed(n) => out.push_str(&format!("{p} = fixed {n}\n")),
                 Val::Bytes(x) => {
-                    if depth < 8 && !x.is_empty() && fields(x).is_some() && std::str::from_utf8(x).map(|s| s.chars().any(|c| c.is_control() && c != '\n')).unwrap_or(true) {
+                    if depth < 8
+                        && !x.is_empty()
+                        && fields(x).is_some()
+                        && std::str::from_utf8(x)
+                            .map(|s| s.chars().any(|c| c.is_control() && c != '\n'))
+                            .unwrap_or(true)
+                    {
                         out.push_str(&format!("{p} {{\n"));
                         dump(x, depth + 1, &p, out);
                         out.push_str("}\n");
