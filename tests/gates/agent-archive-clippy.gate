@@ -1,0 +1,23 @@
+gate: AGENT_ARCHIVE-CLIPPY
+manifest_version: 2
+owner: agent-archive
+requires:
+  - host
+inputs:
+  - Cargo.toml
+  - Cargo.lock
+  - src/
+  - crates/
+  - tests/
+  - tests/gates/
+  - src/
+  - tests/
+run:
+  exec: tests/gates/run.sh
+  args: ["clippy"]
+expects:
+  exit: 0
+  verdict: PASS
+timeout: 20m
+exactness: EXACT
+cache_scope: machine
