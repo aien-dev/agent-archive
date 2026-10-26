@@ -4,6 +4,7 @@ use crate::pb;
 use rusqlite::{Connection, OpenFlags};
 use serde_json::{json, Value};
 use std::path::{Path, PathBuf};
+use std::os::unix::fs::OpenOptionsExt;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 pub struct Cfg {
@@ -40,7 +41,7 @@ where F: FnMut(&str, &str, u64, &mut Value) -> Vec<Record> {
     let raw = store.root.join("raw").join(agent).join(host).join(&key);
     let mut recs: Vec<Record> = Vec::new();
     let path_s = file.to_string_lossy().to_string();
-    let (newpos, reset) = tail_lines(file, &raw, pos0, |line, pos| { recs.extend(parse(line, &path_s, pos, &mut aux)); })?;
+    let (newpos, reset) = tail_lines(&store.root, file, &raw, pos0, |line, pos| { recs.extend(parse(line, &path_s, pos, &mut aux)); })?;
     let dup = cur.is_none() || reset;
     for r in recs { store.emit(r, dup)?; }
     let mut nv = if aux.is_object() { aux } else { json!({}) };
@@ -170,8 +171,8 @@ pub fn collect_opencode(store: &mut Store, cfg: &Cfg) -> std::io::Result<()> {
     let mut st = match conn.prepare(sql) { Ok(s) => s, Err(_) => return Ok(()) };
     let mut rows = match st.query(rusqlite::params![ct, cid]) { Ok(r) => r, Err(_) => return Ok(()) };
     let raw_path = store.root.join("raw/opencode").join(&cfg.host).join("opencode-rows.jsonl");
-    std::fs::create_dir_all(raw_path.parent().unwrap())?;
-    let mut raw = std::fs::OpenOptions::new().create(true).append(true).open(&raw_path)?;
+    private_dir(&store.root, raw_path.parent().unwrap())?;
+    let mut raw = private_append(&raw_path)?;
     let mut last = (ct, cid.clone());
     while let Ok(Some(r)) = rows.next() {
         let id: String = r.get(0).unwrap_or_default();
@@ -262,10 +263,7 @@ fn copy_if_changed(store: &mut Store, src: &Path, dst: &Path, sig_key: &str) -> 
     let m = std::fs::metadata(src)?;
     let sig = format!("{}:{}", m.len(), m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0));
     if store.cursor("gemini", sig_key).and_then(|v| v.as_str()) == Some(sig.as_str()) && dst.exists() { return Ok(false); }
-    if let Some(p) = dst.parent() { std::fs::create_dir_all(p)?; }
-    let tmp = dst.with_extension("part");
-    std::fs::copy(src, &tmp)?;
-    std::fs::rename(&tmp, dst)?;
+    private_copy(&store.root, src, dst)?;
     store.set_cursor("gemini", sig_key, json!(sig));
     Ok(true)
 }
@@ -317,10 +315,17 @@ pub fn pull_macbook(store: &mut Store, every_s: u64) -> std::io::Result<()> {
         let sig = format!("{size}:{mtime}");
         let sk = format!("macsig:{relp}");
         if store.cursor("gemini", &sk).and_then(|v| v.as_str()) == Some(sig.as_str()) && dst.exists() { continue; }
-        if let Some(d) = dst.parent() { std::fs::create_dir_all(d)?; }
+        private_dir(&store.root, dst.parent().unwrap())?;
+        private_file(&dst)?;
         let tmp = dst.with_extension("part");
+        let _out = std::fs::OpenOptions::new().write(true).create_new(true)
+            .mode(0o600).open(&tmp)?;
         let ok = Command::new("scp").args(ssh).arg("-q").arg(format!("macbook:{path}")).arg(&tmp).status().map(|s| s.success()).unwrap_or(false);
-        if ok { std::fs::rename(&tmp, &dst)?; store.set_cursor("gemini", &sk, json!(sig)); } else { let _ = std::fs::remove_file(&tmp); eprintln!("scp failed: {relp}"); }
+        if ok {
+            private_file(&tmp)?;
+            std::fs::rename(&tmp, &dst)?;
+            store.set_cursor("gemini", &sk, json!(sig));
+        } else { let _ = std::fs::remove_file(&tmp); eprintln!("scp failed: {relp}"); }
     }
     Ok(())
 }

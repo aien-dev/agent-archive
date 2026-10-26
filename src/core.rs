@@ -5,6 +5,66 @@ use std::collections::{HashMap, HashSet, VecDeque};
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+use std::path::Component;
+
+/// New archive paths are private before they can hold data. Existing paths must
+/// already belong to this process and exclude group and other users.
+fn private_metadata(path: &Path, directory: bool) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    let m = fs::symlink_metadata(path)?;
+    if m.uid() != unsafe { libc::geteuid() }
+        || (m.mode() & 0o077) != 0
+        || if directory { !m.file_type().is_dir() } else { !m.file_type().is_file() }
+    {
+        return Err(Error::new(ErrorKind::PermissionDenied, format!("unsafe archive path: {}", path.display())));
+    }
+    Ok(())
+}
+
+pub fn private_dir(root: &Path, path: &Path) -> std::io::Result<()> {
+    use std::io::{Error, ErrorKind};
+    if !root.exists() {
+        fs::DirBuilder::new().recursive(true).mode(0o700).create(root)?;
+    }
+    private_metadata(root, true)?;
+    let relative = path.strip_prefix(root).map_err(|_| Error::new(ErrorKind::InvalidInput, "path outside archive"))?;
+    let mut current = root.to_path_buf();
+    for part in relative.components() {
+        if let Component::Normal(name) = part {
+            current.push(name);
+            if !current.exists() { fs::DirBuilder::new().mode(0o700).create(&current)?; }
+            private_metadata(&current, true)?;
+        } else {
+            return Err(Error::new(ErrorKind::InvalidInput, "invalid archive path"));
+        }
+    }
+    Ok(())
+}
+
+pub fn private_file(path: &Path) -> std::io::Result<()> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => private_metadata(path, false),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn private_append(path: &Path) -> std::io::Result<File> {
+    private_file(path)?;
+    OpenOptions::new().create(true).append(true).mode(0o600).open(path)
+}
+
+pub fn private_copy(root: &Path, src: &Path, dst: &Path) -> std::io::Result<()> {
+    private_dir(root, dst.parent().unwrap())?;
+    private_file(dst)?;
+    let tmp = dst.with_extension("part");
+    let mut out = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+    let result = File::open(src).and_then(|mut input| std::io::copy(&mut input, &mut out))
+        .and_then(|_| fs::rename(&tmp, dst));
+    if result.is_err() { let _ = fs::remove_file(&tmp); }
+    result.map(|_| ())
+}
 
 pub const LATEST_LINES: usize = 20000;
 pub const TXT_MAX_CHARS: usize = 8000;
@@ -83,7 +143,7 @@ pub struct Store {
 
 impl Store {
     pub fn open(root: &Path) -> std::io::Result<Store> {
-        for d in ["records", "raw", "latest", "state"] { fs::create_dir_all(root.join(d))?; }
+        for d in ["records", "raw", "latest", "state"] { private_dir(root, &root.join(d))?; }
         let mut s = Store { root: root.to_path_buf(), state: HashMap::new(), state_dirty: HashSet::new(),
             seen: HashMap::new(), fresh: VecDeque::new(), latest: HashMap::new(), latest_dirty: HashSet::new(),
             emitted: HashMap::new(), appenders: HashMap::new() };
@@ -105,7 +165,7 @@ impl Store {
     pub fn save_state(&mut self) -> std::io::Result<()> {
         let dirty: Vec<String> = self.state_dirty.drain().collect();
         for a in dirty {
-            atomic_write(&self.root.join("state").join(format!("{a}.json")), serde_json::to_string(&self.state[&a]).unwrap().as_bytes())?;
+            atomic_write(&self.root, &self.root.join("state").join(format!("{a}.json")), serde_json::to_string(&self.state[&a]).unwrap().as_bytes())?;
         }
         Ok(())
     }
@@ -114,7 +174,7 @@ impl Store {
     /// Append a record. `check_dup`: consult the existing date file first (used when a source is re-read after state loss).
     pub fn emit(&mut self, r: Record, check_dup: bool) -> std::io::Result<bool> {
         let dir = self.root.join("records").join(&r.agent);
-        fs::create_dir_all(&dir)?;
+        private_dir(&self.root, &dir)?;
         let path = dir.join(format!("{}.jsonl", r.date()));
         if check_dup && !self.seen.contains_key(&path) {
             let mut set = HashSet::new();
@@ -130,7 +190,7 @@ impl Store {
         }
         if !self.appenders.contains_key(&path) {
             if self.appenders.len() > 64 { self.appenders.clear(); }
-            self.appenders.insert(path.clone(), OpenOptions::new().create(true).append(true).open(&path)?);
+            self.appenders.insert(path.clone(), private_append(&path)?);
         }
         let mut line = serde_json::to_string(&r.to_json()).unwrap();
         line.push('\n');
@@ -167,18 +227,21 @@ impl Store {
                 txt.push_str(&r.txt_line()); txt.push('\n');
                 js.push_str(&serde_json::to_string(&r.to_json()).unwrap()); js.push('\n');
             }
-            atomic_write(&self.root.join("latest").join(format!("{a}.txt")), txt.as_bytes())?;
-            atomic_write(&self.root.join("latest").join(format!("{a}.jsonl")), js.as_bytes())?;
+            atomic_write(&self.root, &self.root.join("latest").join(format!("{a}.txt")), txt.as_bytes())?;
+            atomic_write(&self.root, &self.root.join("latest").join(format!("{a}.jsonl")), js.as_bytes())?;
         }
         self.save_state()
     }
 }
 
-pub fn atomic_write(path: &Path, data: &[u8]) -> std::io::Result<()> {
-    if let Some(p) = path.parent() { fs::create_dir_all(p)?; }
+pub fn atomic_write(root: &Path, path: &Path, data: &[u8]) -> std::io::Result<()> {
+    private_dir(root, path.parent().unwrap())?;
+    private_file(path)?;
     let tmp = path.with_extension(format!("tmp{}", std::process::id()));
-    { let mut f = File::create(&tmp)?; f.write_all(data)?; f.sync_all().ok(); }
-    fs::rename(&tmp, path)
+    let mut f = OpenOptions::new().write(true).create_new(true).mode(0o600).open(&tmp)?;
+    let result = f.write_all(data).and_then(|_| f.sync_all()).and_then(|_| fs::rename(&tmp, path));
+    if result.is_err() { let _ = fs::remove_file(&tmp); }
+    result
 }
 
 /// Last `n` records for an agent, read from the newest date files backwards.
@@ -205,15 +268,15 @@ pub fn load_tail(root: &Path, agent: &str, n: usize) -> Vec<(String, Record)> {
 /// Tail an append-only JSONL source from `cursor`: calls `f(line, byte_pos)` for every complete line, mirrors the
 /// bytes verbatim into `raw_path`, and returns the new cursor. Returns (new_cursor, reset) where reset means the source
 /// shrank and was re-read from 0.
-pub fn tail_lines<F: FnMut(&str, u64)>(src: &Path, raw_path: &Path, cursor: u64, mut f: F) -> std::io::Result<(u64, bool)> {
+pub fn tail_lines<F: FnMut(&str, u64)>(root: &Path, src: &Path, raw_path: &Path, cursor: u64, mut f: F) -> std::io::Result<(u64, bool)> {
     let len = fs::metadata(src)?.len();
     let (mut pos, reset) = if len < cursor { (0, true) } else { (cursor, false) };
     if len == pos { return Ok((pos, reset)); }
     let mut fh = File::open(src)?;
     fh.seek(SeekFrom::Start(pos))?;
     let mut rd = BufReader::with_capacity(1 << 20, fh.take(len - pos));
-    if let Some(p) = raw_path.parent() { fs::create_dir_all(p)?; }
-    let mut raw = OpenOptions::new().create(true).append(true).open(raw_path)?;
+    private_dir(root, raw_path.parent().unwrap())?;
+    let mut raw = private_append(raw_path)?;
     let mut raw_len = raw.metadata()?.len();
     let mut buf = Vec::new();
     loop {

@@ -123,6 +123,8 @@ mod tests {
         let p = std::env::temp_dir().join(format!("aa-test-{}-{}", name, std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         p
     }
     fn fixture(n: &str) -> String { fs::read_to_string(format!("{}/tests/fixtures/{n}", env!("CARGO_MANIFEST_DIR"))).unwrap() }
@@ -298,5 +300,78 @@ mod tests {
         assert_eq!(t.lines().count(), LATEST_LINES);
         assert!(t.lines().last().unwrap().ends_with(&format!("m{}", LATEST_LINES + 49)));
         assert!(!t.contains("] m0\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_files_are_private_with_permissive_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = tmp("private-archive");
+        let root = base.join("archive");
+        let mut st = Store::open(&root).unwrap();
+        let r = Record { ts: "2026-10-04T00:00:00.000Z".into(), agent: "claude".into(),
+            host: "spark".into(), session: "s".into(), role: "user".into(),
+            text: "synthetic private message".into(), model: None, cwd: None,
+            src_path: "fixture.jsonl".into(), src_pos: 0 };
+        st.emit(r, false).unwrap();
+        let source = base.join("source.jsonl");
+        fs::write(&source, b"synthetic raw line\n").unwrap();
+        tail_lines(&root, &source, &root.join("raw/claude/spark/source.jsonl"), 0, |_, _| {}).unwrap();
+        private_copy(&root, &source, &root.join("raw/claude/spark/copied.jsonl")).unwrap();
+        st.set_cursor("claude", "source", serde_json::json!(1));
+        st.finish_pass().unwrap();
+        for dir in ["", "records", "records/claude", "raw", "raw/claude",
+                    "raw/claude/spark", "latest", "state"] {
+            assert_eq!(fs::metadata(root.join(dir)).unwrap().permissions().mode() & 0o777, 0o700, "{dir}");
+        }
+        for file in ["records/claude/2026-10-04.jsonl", "raw/claude/spark/source.jsonl",
+                     "raw/claude/spark/copied.jsonl", "latest/claude.txt",
+                     "latest/claude.jsonl", "state/claude.json"] {
+            assert_eq!(fs::metadata(root.join(file)).unwrap().permissions().mode() & 0o777, 0o600, "{file}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_archive_root_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp("unsafe-archive");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(Store::open(&root).is_err());
+        let parent = tmp("unsafe-root-link");
+        let link = parent.join("archive");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        assert!(Store::open(&link).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_archive_descendant_and_file_are_rejected() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = tmp("unsafe-descendant");
+        let mut st = Store::open(&root).unwrap();
+        let dir = root.join("records/claude");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let r = Record { ts: "2026-10-04T00:00:00.000Z".into(), agent: "claude".into(),
+            host: "spark".into(), session: "s".into(), role: "user".into(), text: "private".into(),
+            model: None, cwd: None, src_path: "synthetic".into(), src_pos: 0 };
+        assert!(st.emit(r.clone(), false).is_err());
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let file = dir.join("2026-10-04.jsonl");
+        fs::write(&file, b"old\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(st.emit(r.clone(), false).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"old\n");
+        fs::remove_file(&file).unwrap();
+        symlink(root.join("latest"), &file).unwrap();
+        assert!(st.emit(r, false).is_err());
+        let victim = root.join("latest/victim");
+        fs::write(&victim, b"unchanged").unwrap();
+        let target = root.join("latest/claude.txt");
+        let tmp = target.with_extension(format!("tmp{}", std::process::id()));
+        symlink(&victim, &tmp).unwrap();
+        assert!(atomic_write(&root, &target, b"private").is_err());
+        assert_eq!(fs::read(&victim).unwrap(), b"unchanged");
     }
 }

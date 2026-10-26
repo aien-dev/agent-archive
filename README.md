@@ -8,12 +8,35 @@ read-only `ssh`/`scp` pull from the MacBook.
 Supports [Aienix](https://github.com/aien-dev/aienix), the core tree of AIEN. It is a tool for the people and agents
 building AIEN: it keeps their chats so past work can be searched later.
 
-**Status (2026-10-18): in use.** The collector runs on the Spark. The code has not changed since
-2026-10-04 (first commit); the last change was a README correction on 2026-10-13.
+**Status:** the collector is in use. This repository documents the source behavior; it does not
+establish which binary or on-disk permissions are currently deployed.
 
 ## Layout
 
 Archive root: `~/archive/agent-chats/` (override with `AGENT_ARCHIVE_ROOT`).
+
+The collector creates the archive root and every archive subdirectory with mode `0700`, and new
+records, raw copies, latest views, state files, and temporary files with mode `0600`. It rejects
+unsafe roots and top-level directories, and checks each descendant directory or file before use:
+symlinks, foreign owners, and group or other access are refused. Use an owner-controlled parent
+for a custom root; do not put it under a directory another local user can replace.
+
+Before upgrading an existing archive, stop its collector and inspect its ownership and symlinks
+without printing transcript contents. With `root` set to the archive path, resolve any foreign
+ownership or symlink intentionally, then restrict existing entries:
+
+```sh
+find "$root" \( -type l -o ! -user "$(id -un)" \) -print
+find "$root" -type d -exec chmod 700 {} +
+find "$root" -type f -exec chmod 600 {} +
+```
+
+Do not run the mode repair on a path you do not own or on a live collector. The first command
+should print no entries before restarting. Existing files are not silently changed at startup.
+
+The lockfile pins `libc` 0.2.190, used here only for the effective user ID check. At an Omega
+cutover, replace this host call with an explicit owner-identity host interface; retain the
+mode and ownership refusal behavior.
 
 | Path | What |
 |---|---|
