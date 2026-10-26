@@ -38,22 +38,27 @@ fn arg(args: &[String], name: &str) -> Option<String> {
     args.iter().position(|a| a == name).and_then(|i| args.get(i + 1).cloned())
 }
 
-fn status(root: &std::path::Path) {
-    let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let st = Store::open(root).expect("open archive");
+fn status(root: &std::path::Path) -> std::io::Result<()> {
+    let today = format!("{}.jsonl", chrono::Utc::now().format("%Y-%m-%d"));
+    let st = Store::open(root)?;
     println!("{:<9} {:<26} {:>12} {:>8} {}", "agent", "last record", "today", "sources", "preview");
     for a in AGENTS {
-        let tail = load_tail(root, a, 1);
+        let tail = load_tail(root, a, 1)?;
         let (last, prev) = tail.last().map(|(t, r)| (t.clone(), r.text.chars().take(80).collect::<String>().replace('\n', " "))).unwrap_or(("-".into(), String::new()));
-        let todayn = std::fs::read_to_string(root.join("records").join(a).join(format!("{today}.jsonl"))).map(|s| s.lines().count()).unwrap_or(0);
-        let total: usize = std::fs::read_dir(root.join("records").join(a)).map(|d| d.flatten().filter_map(|e| std::fs::read_to_string(e.path()).ok()).map(|s| s.lines().count()).sum()).unwrap_or(0);
+        let (mut todayn, mut total) = (0, 0);
+        for f in record_files(root, a)? {
+            let n = private_read_to_string(&f)?.map(|s| s.lines().count()).unwrap_or(0);
+            total += n;
+            if f.file_name().is_some_and(|name| name == today.as_str()) { todayn = n; }
+        }
         let sources = st.state_keys(a);
         println!("{:<9} {:<26} {:>6}/{:<6} {:>8} {}", a, last, todayn, total, sources, prev);
     }
     println!("(today/total records)");
+    Ok(())
 }
 
-fn query(root: &std::path::Path, args: &[String]) {
+fn query(root: &std::path::Path, args: &[String]) -> std::io::Result<()> {
     let agent = arg(args, "--agent");
     let since = arg(args, "--since").unwrap_or_default();
     let re = arg(args, "--grep").map(|g| Regex::new(&g).unwrap_or_else(|e| { eprintln!("bad --grep: {e}"); std::process::exit(2) }));
@@ -62,13 +67,10 @@ fn query(root: &std::path::Path, args: &[String]) {
     let agents: Vec<String> = match agent { Some(a) => vec![a], None => AGENTS.iter().map(|s| s.to_string()).collect() };
     let mut hits: Vec<(String, Record)> = vec![];
     for a in agents {
-        let dir = root.join("records").join(&a);
-        let mut files: Vec<PathBuf> = std::fs::read_dir(&dir).map(|d| d.flatten().map(|e| e.path()).collect()).unwrap_or_default();
-        files.sort();
-        for f in files {
+        for f in record_files(root, &a)? {
             let day = f.file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
             if !since.is_empty() && day.as_str() < &since[..since.len().min(10)] { continue; }
-            let Ok(t) = std::fs::read_to_string(&f) else { continue };
+            let Some(t) = private_read_to_string(&f)? else { continue };
             for l in t.lines() {
                 let Some(r) = serde_json::from_str(l).ok().and_then(|v| Record::from_json(&v)) else { continue };
                 if !since.is_empty() && r.ts.as_str() < since.as_str() { continue; }
@@ -82,6 +84,11 @@ fn query(root: &std::path::Path, args: &[String]) {
     for (_, r) in hits.into_iter().skip(skip) {
         if json { println!("{}", serde_json::to_string(&r.to_json()).unwrap()); } else { println!("{} {}", r.agent, r.txt_line()); }
     }
+    Ok(())
+}
+
+fn refuse(cmd: &str, result: std::io::Result<()>) {
+    if let Err(e) = result { eprintln!("{cmd} refused: {e}"); std::process::exit(1); }
 }
 
 fn main() {
@@ -105,8 +112,8 @@ fn main() {
                 std::thread::sleep(Duration::from_secs(10));
             }
         }
-        "query" => query(&root, &args[1..]),
-        "status" => status(&root),
+        "query" => refuse("query", query(&root, &args[1..])),
+        "status" => refuse("status", status(&root)),
         "debug-pb" => { let b = std::fs::read(&args[1]).expect("read file"); let mut s = String::new(); pb::dump(&b, 0, "", &mut s); print!("{s}"); }
         _ => {
             println!("agent-archive collect | once [--no-mac] | status | debug-pb FILE | query [--agent A] [--since TS] [--grep RE] [--limit N] [--json]\nroot: {} (override with AGENT_ARCHIVE_ROOT)", root.display());
@@ -123,6 +130,8 @@ mod tests {
         let p = std::env::temp_dir().join(format!("aa-test-{}-{}", name, std::process::id()));
         let _ = fs::remove_dir_all(&p);
         fs::create_dir_all(&p).unwrap();
+        #[cfg(unix)]
+        fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
         p
     }
     fn fixture(n: &str) -> String { fs::read_to_string(format!("{}/tests/fixtures/{n}", env!("CARGO_MANIFEST_DIR"))).unwrap() }
@@ -254,7 +263,7 @@ mod tests {
         let mut st = Store::open(&root).unwrap();
         pass(&mut st, &cfg, false);
         assert_eq!(count(&root, "opencode"), 2);
-        let recs = load_tail(&root, "opencode", 10);
+        let recs = load_tail(&root, "opencode", 10).unwrap();
         assert_eq!(recs[0].1.text, "hi there");
         assert_eq!(recs[0].1.model.as_deref(), Some("m1"));
         assert_eq!(recs[1].1.role, "assistant");
@@ -298,5 +307,186 @@ mod tests {
         assert_eq!(t.lines().count(), LATEST_LINES);
         assert!(t.lines().last().unwrap().ends_with(&format!("m{}", LATEST_LINES + 49)));
         assert!(!t.contains("] m0\n"));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn archive_files_are_private_with_permissive_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let base = tmp("private-archive");
+        let root = base.join("archive");
+        let mut st = Store::open(&root).unwrap();
+        let r = Record { ts: "2026-10-04T00:00:00.000Z".into(), agent: "claude".into(),
+            host: "spark".into(), session: "s".into(), role: "user".into(),
+            text: "synthetic private message".into(), model: None, cwd: None,
+            src_path: "fixture.jsonl".into(), src_pos: 0 };
+        st.emit(r, false).unwrap();
+        let source = base.join("source.jsonl");
+        fs::write(&source, b"synthetic raw line\n").unwrap();
+        tail_lines(&root, &source, &root.join("raw/claude/spark/source.jsonl"), 0, |_, _| {}).unwrap();
+        private_copy(&root, &source, &root.join("raw/claude/spark/copied.jsonl")).unwrap();
+        st.set_cursor("claude", "source", serde_json::json!(1));
+        st.finish_pass().unwrap();
+        for dir in ["", "records", "records/claude", "raw", "raw/claude",
+                    "raw/claude/spark", "latest", "state"] {
+            assert_eq!(fs::metadata(root.join(dir)).unwrap().permissions().mode() & 0o777, 0o700, "{dir}");
+        }
+        for file in ["records/claude/2026-10-04.jsonl", "raw/claude/spark/source.jsonl",
+                     "raw/claude/spark/copied.jsonl", "latest/claude.txt",
+                     "latest/claude.jsonl", "state/claude.json"] {
+            assert_eq!(fs::metadata(root.join(file)).unwrap().permissions().mode() & 0o777, 0o600, "{file}");
+        }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_archive_root_is_rejected() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp("unsafe-archive");
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(Store::open(&root).is_err());
+        let parent = tmp("unsafe-root-link");
+        let link = parent.join("archive");
+        std::os::unix::fs::symlink(&root, &link).unwrap();
+        assert!(Store::open(&link).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_archive_descendant_and_file_are_rejected() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = tmp("unsafe-descendant");
+        let mut st = Store::open(&root).unwrap();
+        let dir = root.join("records/claude");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
+        let r = Record { ts: "2026-10-04T00:00:00.000Z".into(), agent: "claude".into(),
+            host: "spark".into(), session: "s".into(), role: "user".into(), text: "private".into(),
+            model: None, cwd: None, src_path: "synthetic".into(), src_pos: 0 };
+        assert!(st.emit(r.clone(), false).is_err());
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let file = dir.join("2026-10-04.jsonl");
+        fs::write(&file, b"old\n").unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(st.emit(r.clone(), false).is_err());
+        assert_eq!(fs::read(&file).unwrap(), b"old\n");
+        fs::remove_file(&file).unwrap();
+        symlink(root.join("latest"), &file).unwrap();
+        assert!(st.emit(r, false).is_err());
+        let victim = root.join("latest/victim");
+        fs::write(&victim, b"unchanged").unwrap();
+        let target = root.join("latest/claude.txt");
+        let tmp = target.with_extension(format!("tmp{}", std::process::id()));
+        symlink(&victim, &tmp).unwrap();
+        assert!(atomic_write(&root, &target, b"private").is_err());
+        assert_eq!(fs::read(&victim).unwrap(), b"unchanged");
+    }
+
+    #[cfg(unix)]
+    fn synthetic(src_pos: u64) -> Record {
+        Record { ts: "2026-10-04T00:00:00.000Z".into(), agent: "claude".into(), host: "spark".into(),
+            session: "s".into(), role: "user".into(), text: "synthetic".into(), model: None, cwd: None,
+            src_path: "synthetic".into(), src_pos }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_state_file_is_refused_before_cursors_load() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = tmp("unsafe-state");
+        Store::open(&root).unwrap();
+        let state = root.join("state/claude.json");
+        fs::write(&state, b"{\"source\":7}").unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(Store::open(&root).is_err());
+        fs::remove_file(&state).unwrap();
+        let outside = tmp("unsafe-state-target").join("cursor.json");
+        fs::write(&outside, b"{\"source\":7}").unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&outside, &state).unwrap();
+        assert!(Store::open(&root).is_err());
+        // Control: the same cursor in a private state file loads.
+        fs::remove_file(&state).unwrap();
+        fs::write(&state, b"{\"source\":7}").unwrap();
+        fs::set_permissions(&state, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(Store::open(&root).unwrap().cursor("claude", "source"), Some(&serde_json::json!(7)));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_duplicate_record_is_refused_before_dedup() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let root = tmp("unsafe-dedup");
+        let mut st = Store::open(&root).unwrap();
+        let dir = root.join("records/claude");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let file = dir.join("2026-10-04.jsonl");
+        let line = format!("{}\n", serde_json::to_string(&synthetic(0).to_json()).unwrap());
+        let outside = tmp("unsafe-dedup-target").join("records.jsonl");
+        fs::write(&outside, &line).unwrap();
+        fs::set_permissions(&outside, fs::Permissions::from_mode(0o600)).unwrap();
+        symlink(&outside, &file).unwrap();
+        assert!(st.emit(synthetic(0), true).is_err());
+        fs::remove_file(&file).unwrap();
+        fs::write(&file, &line).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o640)).unwrap();
+        assert!(st.emit(synthetic(0), true).is_err());
+        assert_eq!(fs::read_to_string(&file).unwrap(), line);
+        // Control: the same duplicate in a private file is recognised, not appended.
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(!st.emit(synthetic(0), true).unwrap());
+        assert_eq!(fs::read_to_string(&file).unwrap(), line);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unsafe_history_record_is_refused_before_latest_view() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = tmp("unsafe-history");
+        let mut st = Store::open(&root).unwrap();
+        let dir = root.join("records/claude");
+        fs::create_dir(&dir).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        let old = dir.join("2026-10-03.jsonl");
+        fs::write(&old, format!("{}\n", serde_json::to_string(&synthetic(1).to_json()).unwrap())).unwrap();
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(load_tail(&root, "claude", 10).is_err());
+        assert!(st.emit(synthetic(2), false).is_err());
+        assert!(!dir.join("2026-10-04.jsonl").exists());
+        assert!(!root.join("latest/claude.txt").exists());
+        // Control: once private, the historical record is read and the new record is accepted.
+        fs::set_permissions(&old, fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(load_tail(&root, "claude", 10).unwrap().len(), 1);
+        assert!(st.emit(synthetic(2), false).unwrap());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn query_and_status_refuse_unsafe_root_and_records() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+        let args: Vec<String> = vec![];
+        let root = tmp("unsafe-query");
+        fs::create_dir_all(root.join("records/claude")).unwrap();
+        for d in ["records", "records/claude"] { fs::set_permissions(root.join(d), fs::Permissions::from_mode(0o700)).unwrap(); }
+        let file = root.join("records/claude/2026-10-04.jsonl");
+        fs::write(&file, format!("{}\n", serde_json::to_string(&synthetic(0).to_json()).unwrap())).unwrap();
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        // Controls: a private archive is readable.
+        assert!(query(&root, &args).is_ok());
+        assert!(status(&root).is_ok());
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o755)).unwrap();
+        assert!(query(&root, &args).is_err());
+        assert!(status(&root).is_err());
+        fs::set_permissions(&root, fs::Permissions::from_mode(0o700)).unwrap();
+        let link = tmp("unsafe-query-link").join("archive");
+        symlink(&root, &link).unwrap();
+        assert!(query(&link, &args).is_err());
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o604)).unwrap();
+        assert!(query(&root, &args).is_err());
+        assert!(status(&root).is_err());
+        fs::set_permissions(&file, fs::Permissions::from_mode(0o600)).unwrap();
+        let traversal: Vec<String> = ["--agent", "../records"].iter().map(|s| s.to_string()).collect();
+        assert!(query(&root, &traversal).is_err());
     }
 }
