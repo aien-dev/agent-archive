@@ -10,9 +10,8 @@ use std::path::Component;
 
 /// New archive paths are private before they can hold data. Existing paths must
 /// already belong to this process and exclude group and other users.
-fn private_metadata(path: &Path, directory: bool) -> std::io::Result<()> {
+fn private_check(path: &Path, m: &fs::Metadata, directory: bool) -> std::io::Result<()> {
     use std::io::{Error, ErrorKind};
-    let m = fs::symlink_metadata(path)?;
     if m.uid() != unsafe { libc::geteuid() }
         || (m.mode() & 0o077) != 0
         || if directory { !m.file_type().is_dir() } else { !m.file_type().is_file() }
@@ -20,6 +19,10 @@ fn private_metadata(path: &Path, directory: bool) -> std::io::Result<()> {
         return Err(Error::new(ErrorKind::PermissionDenied, format!("unsafe archive path: {}", path.display())));
     }
     Ok(())
+}
+
+fn private_metadata(path: &Path, directory: bool) -> std::io::Result<()> {
+    private_check(path, &fs::symlink_metadata(path)?, directory)
 }
 
 pub fn private_dir(root: &Path, path: &Path) -> std::io::Result<()> {
@@ -40,6 +43,58 @@ pub fn private_dir(root: &Path, path: &Path) -> std::io::Result<()> {
         }
     }
     Ok(())
+}
+
+/// Check an existing archive directory chain without creating anything. Ok(false) when the root or
+/// a component does not exist yet; any unsafe component is an error.
+pub fn private_existing_dir(root: &Path, path: &Path) -> std::io::Result<bool> {
+    use std::io::{Error, ErrorKind};
+    let relative = path.strip_prefix(root).map_err(|_| Error::new(ErrorKind::InvalidInput, "path outside archive"))?;
+    let mut current = root.to_path_buf();
+    let mut parts = vec![None];
+    for part in relative.components() {
+        let Component::Normal(name) = part else { return Err(Error::new(ErrorKind::InvalidInput, "invalid archive path")) };
+        parts.push(Some(name));
+    }
+    for name in parts {
+        if let Some(name) = name { current.push(name); }
+        match fs::symlink_metadata(&current) {
+            Ok(m) => private_check(&current, &m, true)?,
+            Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
+            Err(e) => return Err(e),
+        }
+    }
+    Ok(true)
+}
+
+/// Open an existing archive file for reading; Ok(None) when absent. The owner, mode and type are
+/// checked on the opened descriptor, and O_NOFOLLOW refuses a symlink.
+pub fn private_open(path: &Path) -> std::io::Result<Option<File>> {
+    use std::io::{Error, ErrorKind};
+    match OpenOptions::new().read(true).custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK).open(path) {
+        Ok(f) => { private_check(path, &f.metadata()?, false)?; Ok(Some(f)) }
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok(None),
+        Err(e) if e.raw_os_error() == Some(libc::ELOOP) =>
+            Err(Error::new(ErrorKind::PermissionDenied, format!("unsafe archive path: {}", path.display()))),
+        Err(e) => Err(e),
+    }
+}
+
+pub fn private_read_to_string(path: &Path) -> std::io::Result<Option<String>> {
+    let Some(mut f) = private_open(path)? else { return Ok(None) };
+    let mut s = String::new();
+    f.read_to_string(&mut s)?;
+    Ok(Some(s))
+}
+
+/// One agent's record date files, sorted; empty when the agent has no record directory yet.
+pub fn record_files(root: &Path, agent: &str) -> std::io::Result<Vec<PathBuf>> {
+    let dir = root.join("records").join(agent);
+    if !private_existing_dir(root, &dir)? { return Ok(Vec::new()); }
+    let mut files = Vec::new();
+    for e in fs::read_dir(&dir)? { files.push(e?.path()); }
+    files.sort();
+    Ok(files)
 }
 
 pub fn private_file(path: &Path) -> std::io::Result<()> {
@@ -148,7 +203,7 @@ impl Store {
             seen: HashMap::new(), fresh: VecDeque::new(), latest: HashMap::new(), latest_dirty: HashSet::new(),
             emitted: HashMap::new(), appenders: HashMap::new() };
         for a in AGENTS {
-            if let Ok(t) = fs::read_to_string(root.join("state").join(format!("{a}.json"))) {
+            if let Some(t) = private_read_to_string(&root.join("state").join(format!("{a}.json")))? {
                 if let Ok(v) = serde_json::from_str::<Value>(&t) { s.state.insert(a.to_string(), v); }
             }
         }
@@ -178,16 +233,17 @@ impl Store {
         let path = dir.join(format!("{}.jsonl", r.date()));
         if check_dup && !self.seen.contains_key(&path) {
             let mut set = HashSet::new();
-            if let Ok(f) = File::open(&path) {
-                for l in BufReader::new(f).lines().map_while(Result::ok) {
-                    if let Some(rec) = serde_json::from_str::<Value>(&l).ok().and_then(|v| Record::from_json(&v)) { set.insert(rec.key()); }
+            if let Some(f) = private_open(&path)? {
+                for l in BufReader::new(f).lines() {
+                    if let Some(rec) = serde_json::from_str::<Value>(&l?).ok().and_then(|v| Record::from_json(&v)) { set.insert(rec.key()); }
                 }
             }
             self.seen.insert(path.clone(), set);
         }
-        if let Some(set) = self.seen.get_mut(&path) {
-            if !set.insert(r.key()) { return Ok(false); }
-        }
+        let key = r.key();
+        if self.seen.get(&path).is_some_and(|set| set.contains(&key)) { return Ok(false); }
+        // Validate and load the history for the latest view before anything is appended.
+        self.latest_for(&r.agent)?;
         if !self.appenders.contains_key(&path) {
             if self.appenders.len() > 64 { self.appenders.clear(); }
             self.appenders.insert(path.clone(), private_append(&path)?);
@@ -195,21 +251,22 @@ impl Store {
         let mut line = serde_json::to_string(&r.to_json()).unwrap();
         line.push('\n');
         self.appenders.get_mut(&path).unwrap().write_all(line.as_bytes())?;
+        if let Some(set) = self.seen.get_mut(&path) { set.insert(key); }
         *self.emitted.entry(r.agent.clone()).or_insert(0) += 1;
         let agent = r.agent.clone();
-        let v = self.latest_for(&agent);
+        let v = self.latest_for(&agent)?;
         v.push((r.ts.clone(), r));
         if v.len() > LATEST_LINES * 2 { v.sort_by(|a, b| a.0.cmp(&b.0)); let n = v.len() - LATEST_LINES; v.drain(..n); }
         self.latest_dirty.insert(agent);
         Ok(true)
     }
 
-    fn latest_for(&mut self, agent: &str) -> &mut Vec<(String, Record)> {
+    fn latest_for(&mut self, agent: &str) -> std::io::Result<&mut Vec<(String, Record)>> {
         if !self.latest.contains_key(agent) {
-            let v = load_tail(&self.root, agent, LATEST_LINES);
+            let v = load_tail(&self.root, agent, LATEST_LINES)?;
             self.latest.insert(agent.to_string(), v);
         }
-        self.latest.get_mut(agent).unwrap()
+        Ok(self.latest.get_mut(agent).unwrap())
     }
 
     /// End of pass: flush cursors and rewrite latest views for agents that got new records.
@@ -245,24 +302,19 @@ pub fn atomic_write(root: &Path, path: &Path, data: &[u8]) -> std::io::Result<()
 }
 
 /// Last `n` records for an agent, read from the newest date files backwards.
-pub fn load_tail(root: &Path, agent: &str, n: usize) -> Vec<(String, Record)> {
-    let dir = root.join("records").join(agent);
-    let mut files: Vec<PathBuf> = fs::read_dir(&dir).map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).collect()).unwrap_or_default();
-    files.sort();
+pub fn load_tail(root: &Path, agent: &str, n: usize) -> std::io::Result<Vec<(String, Record)>> {
+    let files = record_files(root, agent)?;
     let mut out: Vec<(String, Record)> = Vec::new();
     for f in files.iter().rev() {
-        let mut part = Vec::new();
-        if let Ok(fh) = File::open(f) {
-            for l in BufReader::new(fh).lines().map_while(Result::ok) {
-                if let Some(r) = serde_json::from_str::<Value>(&l).ok().and_then(|v| Record::from_json(&v)) { part.push((r.ts.clone(), r)); }
-            }
+        let Some(fh) = private_open(f)? else { continue };
+        for l in BufReader::new(fh).lines() {
+            if let Some(r) = serde_json::from_str::<Value>(&l?).ok().and_then(|v| Record::from_json(&v)) { out.push((r.ts.clone(), r)); }
         }
-        out.extend(part);
         if out.len() >= n { break; }
     }
     out.sort_by(|a, b| a.0.cmp(&b.0));
     if out.len() > n { let k = out.len() - n; out.drain(..k); }
-    out
+    Ok(out)
 }
 
 /// Tail an append-only JSONL source from `cursor`: calls `f(line, byte_pos)` for every complete line, mirrors the

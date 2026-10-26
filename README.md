@@ -18,8 +18,11 @@ Archive root: `~/archive/agent-chats/` (override with `AGENT_ARCHIVE_ROOT`).
 The collector creates the archive root and every archive subdirectory with mode `0700`, and new
 records, raw copies, latest views, state files, and temporary files with mode `0600`. It rejects
 unsafe roots and top-level directories, and checks each descendant directory or file before use:
-symlinks, foreign owners, and group or other access are refused. Use an owner-controlled parent
-for a custom root; do not put it under a directory another local user can replace.
+symlinks, foreign owners, and group or other access are refused. This covers reads as well as
+writes: state cursors, the de-duplication scan, the history behind the latest views, pulled
+MacBook copies, and `status` and `query` refuse an unsafe path with an error (exit 1 for the
+commands) instead of treating it as absent. Use an owner-controlled parent for a custom root; do
+not put it under a directory another local user can replace.
 
 Before upgrading an existing archive, stop its collector and inspect its ownership and symlinks
 without printing transcript contents. With `root` set to the archive path, resolve any foreign

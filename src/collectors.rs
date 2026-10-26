@@ -333,11 +333,14 @@ pub fn pull_macbook(store: &mut Store, every_s: u64) -> std::io::Result<()> {
 /// Parse the already-pulled MacBook copies (raw/gemini/macbook/**/*.db).
 pub fn collect_gemini_mac(store: &mut Store) -> std::io::Result<()> {
     let base = store.root.join("raw/gemini/macbook");
+    if !private_existing_dir(&store.root, &base)? { return Ok(()); }
     let mut dbs = vec![]; walk(&base, "db", &mut dbs); dbs.sort();
     for db in dbs {
+        private_existing_dir(&store.root, db.parent().unwrap())?;
+        private_file(&db)?;
         let relp = rel(&db, &base);
         let k = format!("macbook/{relp}");
-        let m = std::fs::metadata(&db)?;
+        let m = std::fs::symlink_metadata(&db)?;
         let sig = format!("{}:{}", m.len(), m.modified().ok().and_then(|t| t.duration_since(UNIX_EPOCH).ok()).map(|d| d.as_secs()).unwrap_or(0));
         let sk = format!("msig:{relp}");
         if store.cursor("gemini", &sk).and_then(|v| v.as_str()) == Some(sig.as_str()) { continue; }
