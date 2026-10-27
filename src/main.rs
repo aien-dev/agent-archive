@@ -15,8 +15,8 @@ fn default_root() -> PathBuf {
 
 pub fn pass(store: &mut Store, cfg: &Cfg, mac: bool) {
     type C = fn(&mut Store, &Cfg) -> std::io::Result<()>;
-    let steps: [(&str, C); 5] = [("claude", collect_claude), ("codex", collect_codex), ("opencode", collect_opencode),
-        ("gemini", collect_gemini), ("muse", collect_muse)];
+    let steps: [(&str, C); 6] = [("claude", collect_claude), ("codex", collect_codex), ("opencode", collect_opencode),
+        ("gemini", collect_gemini), ("muse", collect_muse), ("omp", collect_omp)];
     for (name, f) in steps {
         if let Err(e) = f(store, cfg) { eprintln!("collector {name} failed: {e}"); }
     }
@@ -240,6 +240,67 @@ mod tests {
         // raw never doubled either
         assert!(fs::read_to_string(root.join("raw/claude/spark/-p/sess1.jsonl")).unwrap().starts_with(&fx));
         assert_eq!(fs::metadata(root.join("raw/claude/spark/-p/sess1.jsonl")).unwrap().len() as usize, more_complete_len);
+    }
+
+    #[test]
+    fn omp_parser_text_roles_session_cwd_model() {
+        let mut aux = serde_json::json!({});
+        let p = "/s/-tmp/2026-10-27T15-28-55-484Z_01a17dfa-90bc-74e6-a642-d39b97cce56c.jsonl";
+        let recs: Vec<_> = fixture("omp.jsonl").lines().flat_map(|l| parse_omp(l, p, 0, "spark", &mut aux)).collect();
+        let got: Vec<(&str, &str)> = recs.iter().map(|r| (r.role.as_str(), r.text.as_str())).collect();
+        assert_eq!(got, [("user", "testing"), ("assistant", "DONE")]);
+        assert_eq!(recs[0].session, "01a17dfa-90bc-74e6-a642-d39b97cce56c");
+        assert_eq!(recs[0].cwd.as_deref(), Some("/tmp"));
+        assert_eq!(recs[0].model.as_deref(), Some("spark/qwen3.6-35b-a3b-fp8"));
+        assert_eq!(recs[1].model.as_deref(), Some("spark/qwen3.6-35b-a3b-fp8"));
+        assert_eq!(recs[1].ts, "2026-10-27T15:29:55.275Z");
+    }
+
+    #[test]
+    fn omp_pass_profiles_and_nested_subagents() {
+        let home = tmp("omphome");
+        let root = tmp("omproot");
+        let fx = fixture("omp.jsonl");
+        let def = home.join(".omp/agent/sessions/-tmp/2026-10-27T15-28-55-484Z_aaaa");
+        let named = home.join(".omp/profiles/work/agent/sessions/-p");
+        fs::create_dir_all(&def).unwrap();
+        fs::create_dir_all(&named).unwrap();
+        fs::create_dir_all(home.join(".omp/profiles/empty/agent")).unwrap();
+        fs::write(def.with_extension("jsonl"), &fx).unwrap();
+        fs::write(def.join("0-Sub.jsonl"), &fx).unwrap();
+        fs::write(def.join("0-Sub.log"), "not a transcript").unwrap();
+        fs::write(named.join("s.jsonl"), &fx).unwrap();
+        let cfg = Cfg { home, host: "spark".into(), mac: false };
+        let mut st = Store::open(&root).unwrap();
+        pass(&mut st, &cfg, false);
+        // the three files share one session id but differ in src.path, so all six records are kept
+        assert_eq!(count(&root, "omp"), 6);
+        let raw = root.join("raw/omp/spark");
+        assert_eq!(fs::read_to_string(raw.join("default/-tmp/2026-10-27T15-28-55-484Z_aaaa.jsonl")).unwrap(), fx);
+        assert_eq!(fs::read_to_string(raw.join("default/-tmp/2026-10-27T15-28-55-484Z_aaaa/0-Sub.jsonl")).unwrap(), fx);
+        assert_eq!(fs::read_to_string(raw.join("work/-p/s.jsonl")).unwrap(), fx);
+        assert!(!raw.join("default/-tmp/2026-10-27T15-28-55-484Z_aaaa/0-Sub.log").exists());
+        pass(&mut st, &cfg, false);
+        assert_eq!(count(&root, "omp"), 6);
+    }
+
+    #[test]
+    fn missing_harness_dirs_are_a_silent_no_op() {
+        let home = tmp("emptyhome");
+        let root = tmp("emptyroot");
+        let cfg = Cfg { home, host: "spark".into(), mac: false };
+        let mut st = Store::open(&root).unwrap();
+        for a in AGENTS {
+            let r = match a {
+                "claude" => collect_claude(&mut st, &cfg), "codex" => collect_codex(&mut st, &cfg),
+                "opencode" => collect_opencode(&mut st, &cfg), "gemini" => collect_gemini(&mut st, &cfg),
+                "muse" => collect_muse(&mut st, &cfg), "omp" => collect_omp(&mut st, &cfg),
+                _ => unreachable!(),
+            };
+            assert!(r.is_ok(), "{a}: {r:?}");
+            assert_eq!(count(&root, a), 0);
+        }
+        assert_eq!(fs::read_dir(root.join("raw")).unwrap().count(), 0);
     }
 
     #[test]
