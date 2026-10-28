@@ -1,6 +1,6 @@
 # agent-archive
 
-One central, long-term archive of every AI agent chat on the DGX Spark: Claude Code, Codex, OpenCode,
+One central, long-term archive of every AI agent chat on the DGX Spark: OMP, Claude Code, Codex, OpenCode,
 Gemini/Antigravity (Spark and MacBook) and Muse. Plain JSONL files, one common record per message,
 plus a verbatim mirror of the original source files. Single Rust binary, no Python, no network except a
 read-only `ssh`/`scp` pull from the MacBook.
@@ -54,7 +54,7 @@ and the raw mirror never writes bytes it already has.
 ## Record schema
 
 ```json
-{"ts":"2026-10-04T20:00:00.000Z","agent":"claude|codex|opencode|gemini|muse","host":"spark|macbook",
+{"ts":"2026-10-04T20:00:00.000Z","agent":"claude|codex|opencode|gemini|muse|omp","host":"spark|macbook",
  "session":"<id>","role":"user|assistant|system","text":"...","model":null,"cwd":null,
  "src":{"path":"...","pos":123}}
 ```
@@ -81,6 +81,10 @@ agent-archive debug-pb FILE              # dump a raw protobuf blob (for Gemini 
 | opencode | `~/.local/share/opencode/opencode.db` (opened read-only), `text` parts; raw mirror is `raw/opencode/spark/opencode-rows.jsonl` (one JSON line per text part, with its message JSON) because the database is live | unit-tested against a small database the test builds with the tables and columns the query reads; no sample of the live database is stored in this repo |
 | gemini | per-conversation sqlite `.db` in `~/.gemini/antigravity{,-cli,-ide}/conversations` (Spark) and, via `ssh` + `scp` to the host alias `macbook` (an entry in the local ssh config), `~/.gemini/antigravity{,-cli,-ide}/conversations` on the Mac into `raw/gemini/macbook/` | UNVERIFIED format: step blobs are protobuf with no schema available; field numbers (user text 19.3.1, reply 20.1, time 5.1) were inferred from sampling. Reply "thinking" text (20.3) is not turned into records. Mac WAL files are pulled but a `-shm` is not, so uncommitted Mac data may be missed |
 | muse | `~/.local/share/muse/sessions/**/session.jsonl`; user text from `runtime.user_intent.accepted`, replies from `assistant_message_committed` | partly verified (unit-tested on `tests/fixtures/muse.jsonl`): the original design note named `turn.input.user` / `run.output.delta`, but those did not occur in the 81 sessions on disk when this parser was written, so the events above are used instead. Framed `retained_frame` lines are only kept in raw |
+| omp | `~/.omp/agent/sessions/**/*.jsonl` (profile `default`) and `~/.omp/profiles/<name>/agent/sessions/**/*.jsonl`, subagent transcripts nested in session directories included; raw mirror is `raw/omp/<host>/<profile>/<path under sessions/>`. `message` lines with role user/assistant/developer (`developer` becomes `system`), text blocks only; session id and cwd from the `session` line, model from the message (`provider/model`) or the last `model_change` | unit-tested on `tests/fixtures/omp.jsonl` (synthetic, in the real format). The first line of a session file is a space-padded `title` record, apparently so the title can be rewritten in place; the raw mirror only appends, so it keeps that line as first read |
+
+A source whose directory or database does not exist (for example a retired harness) is skipped without
+an error.
 
 The Mac pull is skipped (with a log line) if the ssh connection fails, and runs at most every 5 minutes.
 `~/.gemini/antigravity-cli/history.jsonl` is command history only and is mirrored raw.

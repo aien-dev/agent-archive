@@ -28,17 +28,22 @@ fn blocks_text(c: &Value, kinds: &[&str]) -> String {
 }
 
 // ---------------- generic JSONL driver ----------------
-fn drive_jsonl<F>(store: &mut Store, agent: &str, host: &str, base: &Path, file: &Path, mut parse: F) -> std::io::Result<()>
+fn drive_jsonl<F>(store: &mut Store, agent: &str, host: &str, base: &Path, file: &Path, parse: F) -> std::io::Result<()>
 where F: FnMut(&str, &str, u64, &mut Value) -> Vec<Record> {
-    let key = rel(file, base);
-    let cur = store.cursor(agent, &key).cloned();
+    drive_jsonl_key(store, agent, host, &rel(file, base), file, parse)
+}
+
+/// `key` is both the cursor key and the path under `raw/<agent>/<host>/`.
+fn drive_jsonl_key<F>(store: &mut Store, agent: &str, host: &str, key: &str, file: &Path, mut parse: F) -> std::io::Result<()>
+where F: FnMut(&str, &str, u64, &mut Value) -> Vec<Record> {
+    let cur = store.cursor(agent, key).cloned();
     let (pos0, mut aux) = match &cur {
         Some(Value::Object(o)) => (o.get("pos").and_then(|p| p.as_u64()).unwrap_or(0), cur.clone().unwrap()),
         Some(v) => (v.as_u64().unwrap_or(0), json!({})),
         None => (0, json!({})),
     };
     if let Ok(m) = std::fs::metadata(file) { if m.len() == pos0 && cur.is_some() { return Ok(()); } }
-    let raw = store.root.join("raw").join(agent).join(host).join(&key);
+    let raw = store.root.join("raw").join(agent).join(host).join(key);
     let mut recs: Vec<Record> = Vec::new();
     let path_s = file.to_string_lossy().to_string();
     let (newpos, reset) = tail_lines(&store.root, file, &raw, pos0, |line, pos| { recs.extend(parse(line, &path_s, pos, &mut aux)); })?;
@@ -46,7 +51,7 @@ where F: FnMut(&str, &str, u64, &mut Value) -> Vec<Record> {
     for r in recs { store.emit(r, dup)?; }
     let mut nv = if aux.is_object() { aux } else { json!({}) };
     nv["pos"] = json!(newpos);
-    store.set_cursor(agent, &key, nv);
+    store.set_cursor(agent, key, nv);
     Ok(())
 }
 
@@ -150,6 +155,71 @@ pub fn collect_muse(store: &mut Store, cfg: &Cfg) -> std::io::Result<()> {
         if f.file_name().map(|n| n != "session.jsonl").unwrap_or(true) { continue; }
         let host = cfg.host.clone();
         drive_jsonl(store, "muse", &cfg.host, &base, &f, |l, p, pos, _| parse_muse(l, p, pos, &host))?;
+    }
+    Ok(())
+}
+
+// ---------------- omp ----------------
+/// OMP session JSONL: a `session` line (id, cwd), `model_change` lines, and `message` lines whose
+/// `message.role` is user / assistant / developer / toolResult. Only text blocks become records.
+/// `aux` carries the per-file session id, cwd and model.
+pub fn parse_omp(line: &str, path: &str, pos: u64, host: &str, aux: &mut Value) -> Vec<Record> {
+    let Ok(v) = serde_json::from_str::<Value>(line) else { return vec![] };
+    match v.get("type").and_then(|t| t.as_str()) {
+        Some("session") => {
+            if let Some(s) = v.get("id").and_then(|x| x.as_str()) { aux["session"] = json!(s); }
+            if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) { aux["cwd"] = json!(c); }
+            return vec![];
+        }
+        Some("model_change") => {
+            if let Some(m) = v.get("model").and_then(|x| x.as_str()) { aux["model"] = json!(m); }
+            return vec![];
+        }
+        Some("message") => {}
+        _ => return vec![],
+    }
+    let m = &v["message"];
+    let role = match m.get("role").and_then(|r| r.as_str()) { Some("user") => "user", Some("assistant") => "assistant", Some("developer") => "system", _ => return vec![] };
+    let Some(ts) = v.get("timestamp").and_then(|t| t.as_str()).and_then(norm_ts) else { return vec![] };
+    let text = blocks_text(&m["content"], &["text"]);
+    if text.trim().is_empty() { return vec![]; }
+    let session = aux.get("session").and_then(|s| s.as_str()).map(String::from).unwrap_or_else(|| {
+        let stem = Path::new(path).file_stem().map(|s| s.to_string_lossy().to_string()).unwrap_or_default();
+        stem.rsplit_once('_').map(|(_, id)| id.to_string()).unwrap_or(stem)
+    });
+    let model = match (m.get("provider").and_then(|x| x.as_str()), m.get("model").and_then(|x| x.as_str())) {
+        (Some(p), Some(md)) => Some(format!("{p}/{md}")),
+        (None, Some(md)) => Some(md.to_string()),
+        _ => aux.get("model").and_then(|x| x.as_str()).map(String::from),
+    };
+    vec![Record { ts, agent: "omp".into(), host: host.into(), session, role: role.into(), text, model,
+        cwd: aux.get("cwd").and_then(|m| m.as_str()).map(String::from), src_path: path.into(), src_pos: pos }]
+}
+
+/// Session roots: `~/.omp/agent/sessions` as profile `default`, and `~/.omp/profiles/<name>/agent/sessions`.
+/// Raw copies land in `raw/omp/<host>/<profile>/<path relative to the sessions dir>`.
+pub fn collect_omp(store: &mut Store, cfg: &Cfg) -> std::io::Result<()> {
+    let omp = cfg.home.join(".omp");
+    let mut roots = vec![("default".to_string(), omp.join("agent/sessions"))];
+    if let Ok(rd) = std::fs::read_dir(omp.join("profiles")) {
+        let mut named: Vec<(String, PathBuf)> = rd.flatten()
+            .map(|e| (e.file_name().to_string_lossy().to_string(), e.path().join("agent/sessions")))
+            .collect();
+        named.sort();
+        roots.extend(named);
+    }
+    for (profile, base) in roots {
+        let mut files = vec![]; walk(&base, "jsonl", &mut files);
+        files.sort();
+        for f in files {
+            let key = format!("{profile}/{}", rel(&f, &base));
+            let host = cfg.host.clone();
+            // A subagent file deleted between walk and read is skipped; every other error stops the pass.
+            match drive_jsonl_key(store, "omp", &cfg.host, &key, &f, |l, p, pos, aux| parse_omp(l, p, pos, &host, aux)) {
+                Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+                r => r?,
+            }
+        }
     }
     Ok(())
 }
