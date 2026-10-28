@@ -41,7 +41,7 @@ fn arg(args: &[String], name: &str) -> Option<String> {
 fn status(root: &std::path::Path) -> std::io::Result<()> {
     let today = format!("{}.jsonl", chrono::Utc::now().format("%Y-%m-%d"));
     let st = Store::open(root)?;
-    println!("{:<9} {:<26} {:>12} {:>8} {}", "agent", "last record", "today", "sources", "preview");
+    println!("{:<9} {:<26} {:>12} {:>8} preview", "agent", "last record", "today", "sources");
     for a in AGENTS {
         let tail = load_tail(root, a, 1)?;
         let (last, prev) = tail.last().map(|(t, r)| (t.clone(), r.text.chars().take(80).collect::<String>().replace('\n', " "))).unwrap_or(("-".into(), String::new()));
