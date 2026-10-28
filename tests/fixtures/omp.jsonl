@@ -1,0 +1,9 @@
+{"type":"title","v":1,"title":"","updatedAt":"2026-10-27T15:28:55.484Z","pad":"          "}
+{"type":"session","version":3,"id":"01a17dfa-90bc-74e6-a642-d39b97cce56c","timestamp":"2026-10-27T15:28:55.484Z","cwd":"/tmp"}
+{"type":"model_change","id":"99580e83","parentId":null,"timestamp":"2026-10-27T15:28:55.529Z","runtime":{"version":"18.13.1"},"model":"spark/qwen3.6-35b-a3b-fp8","resolvedModelIsFallback":false}
+{"type":"message","id":"86708134","parentId":"99580e83","timestamp":"2026-10-27T15:29:01.899Z","runtime":{"version":"18.13.1"},"message":{"role":"user","content":[{"type":"text","text":"testing"}],"attribution":"user","timestamp":1793114941857}}
+{"type":"custom","customType":"system-prompt-digest","id":"768f60fa","parentId":"86708134","timestamp":"2026-10-27T15:29:55.275Z","runtime":{"version":"18.13.1"}}
+{"type":"message","id":"a1b2c3d4","parentId":"768f60fa","timestamp":"2026-10-27T15:29:50.000Z","runtime":{"version":"18.13.1"},"message":{"role":"assistant","content":[{"type":"thinking","thinking":"hidden"},{"type":"toolCall","id":"c1","name":"read","arguments":{"path":"x"}}],"provider":"spark","model":"qwen3.6-35b-a3b-fp8"}}
+{"type":"message","id":"e5f6a7b8","parentId":"a1b2c3d4","timestamp":"2026-10-27T15:29:51.000Z","runtime":{"version":"18.13.1"},"message":{"role":"toolResult","toolCallId":"c1","content":[{"type":"text","text":"file body"}]}}
+{"type":"message","id":"a6e5838e","parentId":"e5f6a7b8","timestamp":"2026-10-27T15:29:55.275Z","runtime":{"version":"18.13.1"},"message":{"role":"assistant","content":[{"type":"thinking","thinking":"hidden"},{"type":"text","text":"DONE"}],"provider":"spark","model":"qwen3.6-35b-a3b-fp8","stopReason":"stop"}}
+{"type":"custom","customType":"session_exit","id":"9dd4a356","parentId":"a6e5838e","timestamp":"2026-10-27T15:31:35.917Z","runtime":{"version":"18.13.1"}}
