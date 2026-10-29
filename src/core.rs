@@ -123,7 +123,7 @@ pub fn private_copy(root: &Path, src: &Path, dst: &Path) -> std::io::Result<()> 
 
 pub const LATEST_LINES: usize = 20000;
 pub const TXT_MAX_CHARS: usize = 8000;
-pub const AGENTS: [&str; 5] = ["claude", "codex", "opencode", "gemini", "muse"];
+pub const AGENTS: [&str; 6] = ["claude", "codex", "opencode", "gemini", "muse", "omp"];
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct Record {

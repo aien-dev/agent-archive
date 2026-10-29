@@ -1,6 +1,6 @@
 # agent-archive (central archive of AI agent chats on the DGX Spark)
 
-> A single Rust binary that collects every AI agent chat on the DGX Spark (Claude Code, Codex, OpenCode, Gemini/Antigravity on Spark and MacBook, Muse) into plain JSONL records plus a verbatim raw mirror of the source files. This repository holds the collector code and small test fixtures only; the archive data itself lives outside the repository. No network access except a read-only `ssh`/`scp` pull from the MacBook.
+> A single Rust binary that collects every AI agent chat on the DGX Spark (OMP, Claude Code, Codex, OpenCode, Gemini/Antigravity on Spark and MacBook, Muse) into plain JSONL records plus a verbatim raw mirror of the source files. This repository holds the collector code and small test fixtures only; the archive data itself lives outside the repository. No network access except a read-only `ssh`/`scp` pull from the MacBook.
 
 Shared rules: read https://www.aienos.com/agents/RULES.md first. This file adds what is specific to this repository; where the two differ, this file wins here.
 
