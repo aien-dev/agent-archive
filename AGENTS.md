@@ -8,7 +8,7 @@ Shared rules: read https://www.aienos.com/agents/RULES.md first. This file adds 
 
 - Applies to the whole repository: `src/` (`main.rs` commands and tests, `collectors.rs` parsers, `core.rs` store and agent list, `pb.rs` protobuf decoding), `tests/fixtures/`, `Cargo.toml`.
 - Status: in use on the Spark. Code has been stable since the first commit.
-- Supports [AienOS](https://github.com/aien-dev/aienix), the whole AIEN system.
+- Supports [Sovereign Intelligence (SI)](https://github.com/aien-dev/sovereign-intelligence), the whole system. AienOS is only the operating-system layer.
 
 ## Installation
 
